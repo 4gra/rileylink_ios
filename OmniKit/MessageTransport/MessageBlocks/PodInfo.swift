@@ -17,12 +17,14 @@ public protocol PodInfo {
 
 public enum PodInfoResponseSubType: UInt8, Equatable {
     case normal                      = 0x00
-    case configuredAlerts            = 0x01 // Returns information on configured alerts
-    case detailedStatus              = 0x02 // Returned on any pod fault
-    case pulseLogPlus                = 0x03 // Returns up to the last 60 pulse log entries plus additional info
-    case activationTime              = 0x05 // Returns activation date, elapsed time, and fault code
-    case pulseLogRecent              = 0x50 // Returns the last 50 pulse log entries
-    case pulseLogPrevious            = 0x51 // Like 0x50, but returns up to the previous 50 entries before the last 50
+    case configuredAlerts            = 0x01
+    case faultEvents                 = 0x02
+    case dataLog                     = 0x03
+    case fault                       = 0x05
+    case hardcodedTestValues         = 0x06
+    case resetStatus                 = 0x46 // including state, initialization time, any faults
+    case flashLogRecent              = 0x50 // dumps up to 50 entries data from the flash log
+    case dumpOlderFlashlog           = 0x51 // like 0x50, but dumps entries before the last 50
     
     public var podInfoType: PodInfo.Type {
         switch self {
@@ -30,16 +32,20 @@ public enum PodInfoResponseSubType: UInt8, Equatable {
             return StatusResponse.self as! PodInfo.Type
         case .configuredAlerts:
             return PodInfoConfiguredAlerts.self
-        case .detailedStatus:
-            return DetailedStatus.self
-        case .pulseLogPlus:
-            return PodInfoPulseLogPlus.self
-        case .activationTime:
-            return PodInfoActivationTime.self
-        case .pulseLogRecent:
-            return PodInfoPulseLogRecent.self
-        case .pulseLogPrevious:
-            return PodInfoPulseLogPrevious.self
+        case .faultEvents:
+            return PodInfoFaultEvent.self
+        case .dataLog:
+            return PodInfoDataLog.self
+        case .fault:
+            return PodInfoFault.self
+        case .hardcodedTestValues:
+            return PodInfoTester.self
+        case .resetStatus:
+            return PodInfoResetStatus.self
+        case .flashLogRecent:
+            return PodInfoFlashLogRecent.self
+        case .dumpOlderFlashlog:
+            return PodInfoFlashLogPrevious.self
         }
     }
 }

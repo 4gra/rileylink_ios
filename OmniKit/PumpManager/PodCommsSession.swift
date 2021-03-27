@@ -20,21 +20,13 @@ public enum PodCommsError: Error {
     case unexpectedPacketType(packetType: PacketType)
     case unexpectedResponse(response: MessageBlockType)
     case unknownResponseType(rawType: UInt8)
-    case invalidAddress(address: UInt32, expectedAddress: UInt32)
     case noRileyLinkAvailable
     case unfinalizedBolus
     case unfinalizedTempBasal
     case nonceResyncFailed
     case podSuspended
-    case podFault(fault: DetailedStatus)
+    case podFault(fault: PodInfoFaultEvent)
     case commsError(error: Error)
-    case rejectedMessage(errorCode: UInt8)
-    case podChange
-    case activationTimeExceeded
-    case rssiTooLow
-    case rssiTooHigh
-    case diagnosticMessage(str: String)
-    case podIncompatible(str: String)
 }
 
 extension PodCommsError: LocalizedError {
@@ -49,15 +41,13 @@ extension PodCommsError: LocalizedError {
         case .emptyResponse:
             return LocalizedString("Empty response from pod", comment: "Error message shown when empty response from pod was received")
         case .podAckedInsteadOfReturningResponse:
-            return LocalizedString("Pod sent ack instead of response", comment: "Error message shown when pod sends ack instead of response")
+            return nil
         case .unexpectedPacketType:
             return nil
         case .unexpectedResponse:
             return LocalizedString("Unexpected response from pod", comment: "Error message shown when empty response from pod was received")
         case .unknownResponseType:
             return nil
-        case .invalidAddress(address: let address, expectedAddress: let expectedAddress):
-            return String(format: LocalizedString("Invalid address 0x%x. Expected 0x%x", comment: "Error message for when unexpected address is received (1: received address) (2: expected address)"), address, expectedAddress)
         case .noRileyLinkAvailable:
             return LocalizedString("No RileyLink available", comment: "Error message shown when no response from pod was received")
         case .unfinalizedBolus:
@@ -69,30 +59,47 @@ extension PodCommsError: LocalizedError {
         case .podSuspended:
             return LocalizedString("Pod is suspended", comment: "Error message action could not be performed because pod is suspended")
         case .podFault(let fault):
-            let faultDescription = String(describing: fault.faultEventCode)
+            let faultDescription = String(describing: fault.currentStatus)
             return String(format: LocalizedString("Pod Fault: %1$@", comment: "Format string for pod fault code"), faultDescription)
-        case .commsError(let error):
-            return error.localizedDescription
-        case .rejectedMessage(let errorCode):
-            return String(format: LocalizedString("Command error %1$u", comment: "Format string for invalid message error code (1: error code number)"), errorCode)
-        case .podChange:
-            return LocalizedString("Unexpected pod change", comment: "Format string for unexpected pod change")
-        case .activationTimeExceeded:
-            return LocalizedString("Activation time exceeded", comment: "Format string for activation time exceeded")
-        case .rssiTooLow: // occurs when RileyLink is too far from pod for reliable pairing, but can sometimes occur at other distances & positions
-            return LocalizedString("Poor signal strength", comment: "Format string for poor pod signal strength")
-        case .rssiTooHigh: // only occurs when RileyLink is too close to the pod for reliable pairing
-            return LocalizedString("Signal strength too high", comment: "Format string for pod signal strength too high")
-        case .diagnosticMessage(let str):
-            return str
-        case .podIncompatible(let str):
-            return str
+        case .commsError:
+            return nil
         }
     }
     
-//    public var failureReason: String? {
-//        return nil
-//    }
+    public var failureReason: String? {
+        switch self {
+        case .noPodPaired:
+            return nil
+        case .invalidData:
+            return nil
+        case .noResponse:
+            return nil
+        case .emptyResponse:
+            return nil
+        case .podAckedInsteadOfReturningResponse:
+            return nil
+        case .unexpectedPacketType:
+            return nil
+        case .unexpectedResponse:
+            return nil
+        case .unknownResponseType:
+            return nil
+        case .noRileyLinkAvailable:
+            return nil
+        case .unfinalizedBolus:
+            return nil
+        case .unfinalizedTempBasal:
+            return nil
+        case .nonceResyncFailed:
+            return nil
+        case .podSuspended:
+            return nil
+        case .podFault:
+            return nil
+        case .commsError:
+            return nil
+        }
+    }
     
     public var recoverySuggestion: String? {
         switch self {
@@ -101,19 +108,17 @@ extension PodCommsError: LocalizedError {
         case .invalidData:
             return nil
         case .noResponse:
-            return LocalizedString("Please try repositioning the pod or the RileyLink and try again", comment: "Recovery suggestion when no response is received from pod")
+            return LocalizedString("Please bring your pod closer to the RileyLink and try again", comment: "Recovery suggestion when no response is received from pod")
         case .emptyResponse:
             return nil
         case .podAckedInsteadOfReturningResponse:
-            return LocalizedString("Try again", comment: "Recovery suggestion when ack received instead of response")
+            return nil
         case .unexpectedPacketType:
             return nil
         case .unexpectedResponse:
             return nil
         case .unknownResponseType:
             return nil
-        case .invalidAddress:
-            return LocalizedString("Crosstalk possible. Please move to a new location and try again", comment: "Recovery suggestion when unexpected address received")
         case .noRileyLinkAvailable:
             return LocalizedString("Make sure your RileyLink is nearby and powered on", comment: "Recovery suggestion when no RileyLink is available")
         case .unfinalizedBolus:
@@ -128,29 +133,6 @@ extension PodCommsError: LocalizedError {
             return nil
         case .commsError:
             return nil
-        case .rejectedMessage:
-            return nil
-        case .podChange:
-            return LocalizedString("Please bring only original pod in range or deactivate original pod", comment: "Recovery suggestion on unexpected pod change")
-        case .activationTimeExceeded:
-            return nil
-        case .rssiTooLow:
-            return LocalizedString("Please reposition the RileyLink relative to the pod", comment: "Recovery suggestion when pairing signal strength is too low")
-        case .rssiTooHigh:
-            return LocalizedString("Please reposition the RileyLink further from the pod", comment: "Recovery suggestion when pairing signal strength is too high")
-        case .diagnosticMessage:
-            return nil
-        case .podIncompatible:
-            return nil
-        }
-    }
-
-    public var isFaulted: Bool {
-        switch self {
-        case .podFault, .activationTimeExceeded, .podIncompatible:
-            return true
-        default:
-            return false
         }
     }
 }
@@ -181,52 +163,35 @@ public class PodCommsSession {
         self.transport.delegate = self
     }
 
-    // Handles updating PodState on first pod fault seen
-    private func handlePodFault(fault: DetailedStatus) {
+    private func handlePodFault(fault: PodInfoFaultEvent) {
         if self.podState.fault == nil {
             self.podState.fault = fault // save the first fault returned
-            handleCancelDosing(deliveryType: .all, bolusNotDelivered: fault.bolusNotDelivered)
-            podState.updateFromDetailedStatusResponse(fault)
         }
         log.error("Pod Fault: %@", String(describing: fault))
-    }
-
-    // Will throw either PodCommsError.podFault or PodCommsError.activationTimeExceeded
-    private func throwPodFault(fault: DetailedStatus) throws {
-        handlePodFault(fault: fault)
-        if fault.podProgressStatus == .activationTimeExceeded {
-            // avoids a confusing "No fault" error when activation time is exceeded
-            throw PodCommsError.activationTimeExceeded
+        if fault.deliveryStatus == .suspended {
+            let now = Date()
+            podState.unfinalizedTempBasal?.cancel(at: now)
+            podState.unfinalizedBolus?.cancel(at: now, withRemaining: fault.insulinNotDelivered)
         }
-        throw PodCommsError.podFault(fault: fault)
     }
 
     /// Performs a message exchange, handling nonce resync, pod faults
     ///
     /// - Parameters:
     ///   - messageBlocks: The message blocks to send
-    ///   - confirmationBeepType: If specified, type of confirmation beep to append as a separate beep message block
     ///   - expectFollowOnMessage: If true, the pod will expect another message within 4 minutes, or will alarm with an 0x33 (51) fault.
     /// - Returns: The received message response
     /// - Throws:
-    ///     - PodCommsError.noResponse
-    ///     - PodCommsError.podFault
-    ///     - PodCommsError.unexpectedResponse
-    ///     - PodCommsError.rejectedMessage
     ///     - PodCommsError.nonceResyncFailed
-    ///     - MessageError
+    ///     - PodCommsError.noResponse
+    ///     - MessageError.invalidCrc
     ///     - RileyLinkDeviceError
-    func send<T: MessageBlock>(_ messageBlocks: [MessageBlock], confirmationBeepType: BeepConfigType? = nil, expectFollowOnMessage: Bool = false) throws -> T {
+    func send<T: MessageBlock>(_ messageBlocks: [MessageBlock], expectFollowOnMessage: Bool = false) throws -> T {
         
         var triesRemaining = 2  // Retries only happen for nonce resync
+        
         var blocksToSend = messageBlocks
         
-        // If a confirmation beep type was specified & pod isn't faulted, append a beep config message block to emit the requested beep type
-        if let confirmationBeepType = confirmationBeepType, podState.isFaulted == false {
-            let confirmationBeepBlock = BeepConfigCommand(beepConfigType: confirmationBeepType, basalCompletionBeep: true, tempBasalCompletionBeep: false, bolusCompletionBeep: true)
-            blocksToSend += [confirmationBeepBlock]
-        }
-
         if blocksToSend.contains(where: { $0 as? NonceResyncableMessageBlock != nil }) {
             podState.advanceToNextNonce()
         }
@@ -256,39 +221,34 @@ public class PodCommsSession {
             if let responseMessageBlock = response.messageBlocks[0] as? T {
                 log.info("POD Response: %@", String(describing: responseMessageBlock))
                 return responseMessageBlock
-            }
-
-            if let fault = response.fault {
-                try throwPodFault(fault: fault) // always throws
-            }
-
-            let responseType = response.messageBlocks[0].blockType
-            guard let errorResponse = response.messageBlocks[0] as? ErrorResponse else {
-                log.error("Unexpected response: %{public}@", String(describing: response.messageBlocks[0]))
-                throw PodCommsError.unexpectedResponse(response: responseType)
-            }
-
-            switch errorResponse.errorResponseType {
-            case .badNonce(let nonceResyncKey):
-                guard let sentNonce = sentNonce else {
-                    log.error("Unexpected bad nonce response: %{public}@", String(describing: response.messageBlocks[0]))
+            } else {
+                let responseType = response.messageBlocks[0].blockType
+                
+                if responseType == .errorResponse,
+                    let sentNonce = sentNonce,
+                    let errorResponse = response.messageBlocks[0] as? ErrorResponse,
+                    errorResponse.errorReponseType == .badNonce
+                {
+                    podState.resyncNonce(syncWord: errorResponse.nonceSearchKey, sentNonce: sentNonce, messageSequenceNum: message.sequenceNum)
+                    log.info("resyncNonce(syncWord: 0x%02x, sentNonce: 0x%04x, messageSequenceNum: %d) -> 0x%04x", errorResponse.nonceSearchKey, sentNonce, message.sequenceNum, podState.currentNonce)
+                    
+                    blocksToSend = blocksToSend.map({ (block) -> MessageBlock in
+                        if var resyncableBlock = block as? NonceResyncableMessageBlock {
+                            log.info("Replaced old nonce 0x%04x with resync nonce 0x%04x", resyncableBlock.nonce, podState.currentNonce)
+                            resyncableBlock.nonce = podState.currentNonce
+                            return resyncableBlock
+                        } else {
+                            return block
+                        }
+                    })
+                    podState.advanceToNextNonce()
+                } else if let fault = response.fault {
+                    handlePodFault(fault: fault)
+                    throw PodCommsError.podFault(fault: fault)
+                } else {
+                    log.error("Unexpected response: %@", String(describing: response.messageBlocks[0]))
                     throw PodCommsError.unexpectedResponse(response: responseType)
                 }
-                podState.resyncNonce(syncWord: nonceResyncKey, sentNonce: sentNonce, messageSequenceNum: message.sequenceNum)
-                log.info("resyncNonce(syncWord: 0x%02x, sentNonce: 0x%04x, messageSequenceNum: %d) -> 0x%04x", nonceResyncKey, sentNonce, message.sequenceNum, podState.currentNonce)
-                blocksToSend = blocksToSend.map({ (block) -> MessageBlock in
-                    if var resyncableBlock = block as? NonceResyncableMessageBlock {
-                        log.info("Replaced old nonce 0x%04x with resync nonce 0x%04x", resyncableBlock.nonce, podState.currentNonce)
-                        resyncableBlock.nonce = podState.currentNonce
-                        return resyncableBlock
-                    }
-                    return block
-                })
-                podState.advanceToNextNonce()
-                break
-            case .nonretryableError(let errorCode, let faultEventCode, let podProgress):
-                log.error("Command error: code %u, %{public}@, pod progress %{public}@", errorCode, String(describing: faultEventCode), String(describing: podProgress))
-                throw PodCommsError.rejectedMessage(errorCode: errorCode)
             }
         }
         throw PodCommsError.nonceResyncFailed
@@ -296,7 +256,9 @@ public class PodCommsSession {
 
     // Returns time at which prime is expected to finish.
     public func prime() throws -> TimeInterval {
-        let primeDuration: TimeInterval = .seconds(Pod.primeUnits / Pod.primeDeliveryRate) + 3 // as per PDM
+        //4c00 00c8 0102
+
+        let primeDuration = TimeInterval(seconds: 55)   // a bit more than (Pod.primeUnits / Pod.primeDeliveryRate)
         
         // Skip following alerts if we've already done them before
         if podState.setupProgress != .startingPrime {
@@ -309,13 +271,13 @@ public class PodCommsSession {
             // We started prime, but didn't get confirmation somehow, so check status
             let status: StatusResponse = try send([GetStatusCommand()])
             podState.updateFromStatusResponse(status)
-            if status.podProgressStatus == .priming || status.podProgressStatus == .primingCompleted {
+            if status.podProgressStatus == .priming || status.podProgressStatus == .readyForBasalSchedule {
                 podState.setupProgress = .priming
                 return podState.primeFinishTime?.timeIntervalSinceNow ?? primeDuration
             }
         }
 
-        // Mark Pod.primeUnits (2.6U) bolus delivery with Pod.primeDeliveryRate (1) between pulses for prime
+        // Mark 2.6U delivery with 1 second between pulses for prime
         
         let primeFinishTime = Date() + primeDuration
         podState.primeFinishTime = primeFinishTime
@@ -336,7 +298,7 @@ public class PodCommsSession {
             // We started basal schedule programming, but didn't get confirmation somehow, so check status
             let status: StatusResponse = try send([GetStatusCommand()])
             podState.updateFromStatusResponse(status)
-            if status.podProgressStatus == .basalInitialized {
+            if status.podProgressStatus == .readyForCannulaInsertion {
                 podState.setupProgress = .initialBasalScheduleSet
                 return
             }
@@ -346,7 +308,7 @@ public class PodCommsSession {
         // Set basal schedule
         let _ = try setBasalSchedule(schedule: basalSchedule, scheduleOffset: scheduleOffset)
         podState.setupProgress = .initialBasalScheduleSet
-        podState.finalizedDoses.append(UnfinalizedDose(resumeStartTime: Date(), scheduledCertainty: .certain, insulinType: podState.insulinType))
+        podState.finalizedDoses.append(UnfinalizedDose(resumeStartTime: Date(), scheduledCertainty: .certain))
     }
 
     @discardableResult
@@ -362,20 +324,17 @@ public class PodCommsSession {
     }
 
     // emits the specified beep type and sets the completion beep flags, doesn't throw
-    public func beepConfig(beepConfigType: BeepConfigType, basalCompletionBeep: Bool, tempBasalCompletionBeep: Bool, bolusCompletionBeep: Bool) -> Result<StatusResponse, Error> {
-        if let fault = self.podState.fault {
+    public func beepConfig(beepConfigType: BeepConfigType, basalCompletionBeep: Bool, tempBasalCompletionBeep: Bool, bolusCompletionBeep: Bool) {
+        guard self.podState.fault == nil else {
             log.info("Skip beep config with faulted pod")
-            return .failure(PodCommsError.podFault(fault: fault))
+            return
         }
         
         let beepConfigCommand = BeepConfigCommand(beepConfigType: beepConfigType, basalCompletionBeep: basalCompletionBeep, tempBasalCompletionBeep: tempBasalCompletionBeep, bolusCompletionBeep: bolusCompletionBeep)
         do {
             let statusResponse: StatusResponse = try send([beepConfigCommand])
             podState.updateFromStatusResponse(statusResponse)
-            return .success(statusResponse)
-        } catch let error {
-            return .failure(error)
-        }
+        } catch {} // never critical
     }
 
     private func markSetupProgressCompleted(statusResponse: StatusResponse) {
@@ -387,8 +346,7 @@ public class PodCommsSession {
     }
 
     public func insertCannula() throws -> TimeInterval {
-        let cannulaInsertionUnits = Pod.cannulaInsertionUnits + Pod.cannulaInsertionUnitsExtra
-        let insertionWait: TimeInterval = .seconds(cannulaInsertionUnits / Pod.primeDeliveryRate)
+        let insertionWait: TimeInterval = .seconds(Pod.cannulaInsertionUnits / Pod.primeDeliveryRate)
 
         guard let activatedAt = podState.activatedAt else {
             throw PodCommsError.noPodPaired
@@ -397,7 +355,7 @@ public class PodCommsSession {
         if podState.setupProgress == .startingInsertCannula || podState.setupProgress == .cannulaInserting {
             // We started cannula insertion, but didn't get confirmation somehow, so check status
             let status: StatusResponse = try send([GetStatusCommand()])
-            if status.podProgressStatus == .insertingCannula {
+            if status.podProgressStatus == .cannulaInserting {
                 podState.setupProgress = .cannulaInserting
                 podState.updateFromStatusResponse(status)
                 return insertionWait // Not sure when it started, wait full time to be sure
@@ -418,14 +376,14 @@ public class PodCommsSession {
             try configureAlerts([expirationAdvisoryAlarm, shutdownImminentAlarm])
         }
         
-        // Mark cannulaInsertionUnits (0.5U) bolus delivery with Pod.secondsPerPrimePulse (1) between pulses for cannula insertion
+        // Mark 0.5U delivery with 1 second between pulses for cannula insertion
 
         let timeBetweenPulses = TimeInterval(seconds: Pod.secondsPerPrimePulse)
-        let bolusSchedule = SetInsulinScheduleCommand.DeliverySchedule.bolus(units: cannulaInsertionUnits, timeBetweenPulses: timeBetweenPulses)
+        let bolusSchedule = SetInsulinScheduleCommand.DeliverySchedule.bolus(units: Pod.cannulaInsertionUnits, timeBetweenPulses: timeBetweenPulses)
         let bolusScheduleCommand = SetInsulinScheduleCommand(nonce: podState.currentNonce, deliverySchedule: bolusSchedule)
         
         podState.setupProgress = .startingInsertCannula
-        let bolusExtraCommand = BolusExtraCommand(units: cannulaInsertionUnits, timeBetweenPulses: timeBetweenPulses)
+        let bolusExtraCommand = BolusExtraCommand(units: Pod.cannulaInsertionUnits, timeBetweenPulses: timeBetweenPulses)
         let status2: StatusResponse = try send([bolusScheduleCommand, bolusExtraCommand])
         podState.updateFromStatusResponse(status2)
         
@@ -457,7 +415,7 @@ public class PodCommsSession {
     }
 
     
-    public func bolus(units: Double, automatic: Bool, acknowledgementBeep: Bool = false, completionBeep: Bool = false, programReminderInterval: TimeInterval = 0) -> DeliveryCommandResult {
+    public func bolus(units: Double, acknowledgementBeep: Bool = false, completionBeep: Bool = false, programReminderInterval: TimeInterval = 0) -> DeliveryCommandResult {
         
         let timeBetweenPulses = TimeInterval(seconds: Pod.secondsPerBolusPulse)
         let bolusSchedule = SetInsulinScheduleCommand.DeliverySchedule.bolus(units: units, timeBetweenPulses: timeBetweenPulses)
@@ -473,25 +431,22 @@ public class PodCommsSession {
         let bolusExtraCommand = BolusExtraCommand(units: units, timeBetweenPulses: timeBetweenPulses, acknowledgementBeep: acknowledgementBeep, completionBeep: completionBeep, programReminderInterval: programReminderInterval)
         do {
             let statusResponse: StatusResponse = try send([bolusScheduleCommand, bolusExtraCommand])
-            podState.unfinalizedBolus = UnfinalizedDose(bolusAmount: units, startTime: Date().addingTimeInterval(commsOffset), scheduledCertainty: .certain, insulinType: podState.insulinType, automatic: automatic)
-            podState.updateFromStatusResponse(statusResponse)
+            podState.unfinalizedBolus = UnfinalizedDose(bolusAmount: units, startTime: Date().addingTimeInterval(commsOffset), scheduledCertainty: .certain)
             return DeliveryCommandResult.success(statusResponse: statusResponse)
         } catch PodCommsError.nonceResyncFailed {
             return DeliveryCommandResult.certainFailure(error: PodCommsError.nonceResyncFailed)
-        } catch PodCommsError.rejectedMessage(let errorCode) {
-            return DeliveryCommandResult.certainFailure(error: PodCommsError.rejectedMessage(errorCode: errorCode))
         } catch let error {
             self.log.debug("Uncertain result bolusing")
             // Attempt to verify bolus
             let podCommsError = error as? PodCommsError ?? PodCommsError.commsError(error: error)
             guard let status = try? getStatus() else {
                 self.log.debug("Status check failed; could not resolve bolus uncertainty")
-                podState.unfinalizedBolus = UnfinalizedDose(bolusAmount: units, startTime: Date(), scheduledCertainty: .uncertain, insulinType: podState.insulinType, automatic: automatic)
+                podState.unfinalizedBolus = UnfinalizedDose(bolusAmount: units, startTime: Date(), scheduledCertainty: .uncertain)
                 return DeliveryCommandResult.uncertainFailure(error: podCommsError)
             }
             if status.deliveryStatus.bolusing {
                 self.log.debug("getStatus resolved bolus uncertainty (succeeded)")
-                podState.unfinalizedBolus = UnfinalizedDose(bolusAmount: units, startTime: Date().addingTimeInterval(commsOffset), scheduledCertainty: .certain, insulinType: podState.insulinType, automatic: automatic)
+                podState.unfinalizedBolus = UnfinalizedDose(bolusAmount: units, startTime: Date().addingTimeInterval(commsOffset), scheduledCertainty: .certain)
                 return DeliveryCommandResult.success(statusResponse: status)
             } else {
                 self.log.debug("getStatus resolved bolus uncertainty (failed)")
@@ -511,143 +466,72 @@ public class PodCommsSession {
 
         do {
             let status: StatusResponse = try send([tempBasalCommand, tempBasalExtraCommand])
-            podState.unfinalizedTempBasal = UnfinalizedDose(tempBasalRate: rate, startTime: Date(), duration: duration, scheduledCertainty: .certain, insulinType: podState.insulinType)
+            podState.unfinalizedTempBasal = UnfinalizedDose(tempBasalRate: rate, startTime: Date(), duration: duration, scheduledCertainty: .certain)
             podState.updateFromStatusResponse(status)
             return DeliveryCommandResult.success(statusResponse: status)
         } catch PodCommsError.nonceResyncFailed {
             return DeliveryCommandResult.certainFailure(error: PodCommsError.nonceResyncFailed)
-        } catch PodCommsError.rejectedMessage(let errorCode) {
-            return DeliveryCommandResult.certainFailure(error: PodCommsError.rejectedMessage(errorCode: errorCode))
         } catch let error {
-            podState.unfinalizedTempBasal = UnfinalizedDose(tempBasalRate: rate, startTime: Date(), duration: duration, scheduledCertainty: .uncertain, insulinType: podState.insulinType)
+            podState.unfinalizedTempBasal = UnfinalizedDose(tempBasalRate: rate, startTime: Date(), duration: duration, scheduledCertainty: .uncertain)
             return DeliveryCommandResult.uncertainFailure(error: error as? PodCommsError ?? PodCommsError.commsError(error: error))
         }
     }
-
-    @discardableResult
-    private func handleCancelDosing(deliveryType: CancelDeliveryCommand.DeliveryType, bolusNotDelivered: Double) -> UnfinalizedDose? {
-        var canceledDose: UnfinalizedDose? = nil
-        let now = Date()
-
-        if deliveryType.contains(.basal) {
-            podState.unfinalizedSuspend = UnfinalizedDose(suspendStartTime: now, scheduledCertainty: .certain)
-            podState.suspendState = .suspended(now)
-        }
-
-        if let unfinalizedTempBasal = podState.unfinalizedTempBasal,
-            let finishTime = unfinalizedTempBasal.finishTime,
-            deliveryType.contains(.tempBasal),
-            finishTime > now
-        {
-            podState.unfinalizedTempBasal?.cancel(at: now)
-            if !deliveryType.contains(.basal) {
-                podState.suspendState = .resumed(now)
-            }
-            canceledDose = podState.unfinalizedTempBasal
-            log.info("Interrupted temp basal: %@", String(describing: canceledDose))
-        }
-
-        if let unfinalizedBolus = podState.unfinalizedBolus,
-            let finishTime = unfinalizedBolus.finishTime,
-            deliveryType.contains(.bolus),
-            finishTime > now
-        {
-            podState.unfinalizedBolus?.cancel(at: now, withRemaining: bolusNotDelivered)
-            canceledDose = podState.unfinalizedBolus
-            log.info("Interrupted bolus: %@", String(describing: canceledDose))
-        }
-
-        return canceledDose
-    }
     
-    // Suspends insulin delivery and sets appropriate podSuspendedReminder & suspendTimeExpired alerts.
-    // An expected suspend time of 0 is an untimed suspend which only uses podSuspendedReminder alert beeps.
-    // An expected suspend time of > 0 and <= 5 minutes will only use suspendTimeExpired alert beeps.
-    public func suspendDelivery(suspendTime: TimeInterval = 0, confirmationBeepType: BeepConfigType? = nil) -> CancelDeliveryResult {
+    public func cancelDelivery(deliveryType: CancelDeliveryCommand.DeliveryType, beepType: BeepType) -> CancelDeliveryResult {
+
+        let cancelDelivery = CancelDeliveryCommand(nonce: podState.currentNonce, deliveryType: deliveryType, beepType: beepType)
+
         do {
-            var alertConfigurations: [AlertConfiguration] = []
-
-            // podSuspendedReminder provides a periodic pod suspended reminder beep until the specified suspend time.
-            let podSuspendedReminder = PodAlert.podSuspendedReminder(active: true, suspendTime: suspendTime)
-            let usePodSuspendedReminder = suspendTime == 0 || suspendTime > .minutes(5) // untimed or long enough suspend
-            if usePodSuspendedReminder {
-               alertConfigurations += [podSuspendedReminder.configuration]
+            let status: StatusResponse = try send([cancelDelivery])
+            let now = Date()
+            if deliveryType.contains(.basal) {
+                podState.unfinalizedSuspend = UnfinalizedDose(suspendStartTime: now, scheduledCertainty: .certain)
+                podState.suspendState = .suspended(now)
             }
 
-            // suspendTimeExpired provides suspend time expired alert beeping after the expected suspend time has passed.
-            let suspendTimeExpired = PodAlert.suspendTimeExpired(suspendTime: suspendTime)
-            let useSuspendTimeExpired = suspendTime > 0 // timed suspend
-            if useSuspendTimeExpired {
-                alertConfigurations += [suspendTimeExpired.configuration]
+            var canceledDose: UnfinalizedDose? = nil
+
+            if let unfinalizedTempBasal = podState.unfinalizedTempBasal,
+                let finishTime = unfinalizedTempBasal.finishTime,
+                deliveryType.contains(.tempBasal),
+                finishTime > now
+            {
+                podState.unfinalizedTempBasal?.cancel(at: now)
+                if !deliveryType.contains(.basal) {
+                    podState.suspendState = .resumed(now)
+                }
+                canceledDose = podState.unfinalizedTempBasal
+                log.info("Interrupted temp basal: %@", String(describing: canceledDose))
             }
 
-            let configureAlerts = ConfigureAlertsCommand(nonce: podState.currentNonce, configurations: alertConfigurations)
-            let cancelDeliveryCommand = CancelDeliveryCommand(nonce: podState.currentNonce, deliveryType: .all, beepType: .noBeep)
-            let status: StatusResponse = try send([cancelDeliveryCommand, configureAlerts], confirmationBeepType: confirmationBeepType)
+            if let unfinalizedBolus = podState.unfinalizedBolus,
+                let finishTime = unfinalizedBolus.finishTime,
+                deliveryType.contains(.bolus),
+                finishTime > now
+            {
+                podState.unfinalizedBolus?.cancel(at: now, withRemaining: status.insulinNotDelivered)
+                canceledDose = podState.unfinalizedBolus
+                log.info("Interrupted bolus: %@", String(describing: canceledDose))
+            }
 
-            let canceledDose = handleCancelDosing(deliveryType: .all, bolusNotDelivered: status.bolusNotDelivered)
             podState.updateFromStatusResponse(status)
 
-            if usePodSuspendedReminder {
-                podState.registerConfiguredAlert(slot: podSuspendedReminder.configuration.slot, alert: podSuspendedReminder)
-            }
-            if useSuspendTimeExpired {
-                podState.registerConfiguredAlert(slot: suspendTimeExpired.configuration.slot, alert: suspendTimeExpired)
-            }
-
             return CancelDeliveryResult.success(statusResponse: status, canceledDose: canceledDose)
+
         } catch PodCommsError.nonceResyncFailed {
             return CancelDeliveryResult.certainFailure(error: PodCommsError.nonceResyncFailed)
-        } catch PodCommsError.rejectedMessage(let errorCode) {
-            return CancelDeliveryResult.certainFailure(error: PodCommsError.rejectedMessage(errorCode: errorCode))
         } catch let error {
             podState.unfinalizedSuspend = UnfinalizedDose(suspendStartTime: Date(), scheduledCertainty: .uncertain)
             return CancelDeliveryResult.uncertainFailure(error: error as? PodCommsError ?? PodCommsError.commsError(error: error))
         }
     }
 
-    // Cancels any suspend related alerts, should be called when resuming after using suspendDelivery()
-    @discardableResult
-    public func cancelSuspendAlerts() throws -> StatusResponse {
-        do {
-            let podSuspendedReminder = PodAlert.podSuspendedReminder(active: false, suspendTime: 0)
-            let suspendTimeExpired = PodAlert.suspendTimeExpired(suspendTime: 0) // A suspendTime of 0 deactivates this alert
-
-            let status = try configureAlerts([podSuspendedReminder, suspendTimeExpired])
-            return status
-        } catch let error {
-            throw error
-        }
-    }
-
-    // Cancel beeping can be done implemented using beepType (for a single delivery type) or a separate confirmation beep message block (for cancel all).
-    // N.B., Using the built-in cancel delivery command beepType method when cancelling all insulin delivery will emit 3 different sets of cancel beeps!!!
-    public func cancelDelivery(deliveryType: CancelDeliveryCommand.DeliveryType, beepType: BeepType = .noBeep, confirmationBeepType: BeepConfigType? = nil) -> CancelDeliveryResult {
-
-        do {
-            let cancelDeliveryCommand = CancelDeliveryCommand(nonce: podState.currentNonce, deliveryType: deliveryType, beepType: beepType)
-            let status: StatusResponse = try send([cancelDeliveryCommand], confirmationBeepType: confirmationBeepType)
-
-            let canceledDose = handleCancelDosing(deliveryType: deliveryType, bolusNotDelivered: status.bolusNotDelivered)
-            podState.updateFromStatusResponse(status)
-
-            return CancelDeliveryResult.success(statusResponse: status, canceledDose: canceledDose)
-        } catch PodCommsError.nonceResyncFailed {
-            return CancelDeliveryResult.certainFailure(error: PodCommsError.nonceResyncFailed)
-        } catch PodCommsError.rejectedMessage(let errorCode) {
-            return CancelDeliveryResult.certainFailure(error: PodCommsError.rejectedMessage(errorCode: errorCode))
-        } catch let error {
-            podState.unfinalizedSuspend = UnfinalizedDose(suspendStartTime: Date(), scheduledCertainty: .uncertain)
-            return CancelDeliveryResult.uncertainFailure(error: error as? PodCommsError ?? PodCommsError.commsError(error: error))
-        }
-    }
-
-    public func testingCommands(confirmationBeepType: BeepConfigType? = nil) throws {
-        try cancelNone(confirmationBeepType: confirmationBeepType) // reads status & verifies nonce by doing a cancel none
+    public func testingCommands() throws {
+        try cancelNone() // reads status & verifies nonce by doing a cancel none
     }
     
-    public func setTime(timeZone: TimeZone, basalSchedule: BasalSchedule, date: Date, acknowledgementBeep: Bool = false, completionBeep: Bool = false) throws -> StatusResponse {
-        let result = cancelDelivery(deliveryType: .all)
+    public func setTime(timeZone: TimeZone, basalSchedule: BasalSchedule, date: Date, acknowledgementBeep: Bool, completionBeep: Bool) throws -> StatusResponse {
+        let result = cancelDelivery(deliveryType: .all, beepType: .noBeep)
         switch result {
         case .certainFailure(let error):
             throw error
@@ -669,15 +553,13 @@ public class PodCommsSession {
             let status: StatusResponse = try send([basalScheduleCommand, basalExtraCommand])
             let now = Date()
             podState.suspendState = .resumed(now)
-            podState.unfinalizedResume = UnfinalizedDose(resumeStartTime: now, scheduledCertainty: .certain, insulinType: podState.insulinType)
+            podState.unfinalizedResume = UnfinalizedDose(resumeStartTime: now, scheduledCertainty: .certain)
             podState.updateFromStatusResponse(status)
             return status
         } catch PodCommsError.nonceResyncFailed {
             throw PodCommsError.nonceResyncFailed
-        } catch PodCommsError.rejectedMessage(let errorCode) {
-            throw PodCommsError.rejectedMessage(errorCode: errorCode)
         } catch let error {
-            podState.unfinalizedResume = UnfinalizedDose(resumeStartTime: Date(), scheduledCertainty: .uncertain, insulinType: podState.insulinType)
+            podState.unfinalizedResume = UnfinalizedDose(resumeStartTime: Date(), scheduledCertainty: .uncertain)
             throw error
         }
     }
@@ -692,12 +574,11 @@ public class PodCommsSession {
     }
     
     // use cancelDelivery with .none to get status as well as to validate & advance the nonce
-    // Throws PodCommsError
     @discardableResult
-    public func cancelNone(confirmationBeepType: BeepConfigType? = nil) throws -> StatusResponse {
+    public func cancelNone() throws -> StatusResponse {
         var statusResponse: StatusResponse
 
-        let cancelResult: CancelDeliveryResult = cancelDelivery(deliveryType: .none, confirmationBeepType: confirmationBeepType)
+        let cancelResult: CancelDeliveryResult = cancelDelivery(deliveryType: .none, beepType: .noBeep)
         switch cancelResult {
         case .certainFailure(let error):
             throw error
@@ -710,50 +591,36 @@ public class PodCommsSession {
         return statusResponse
     }
 
-    // Throws PodCommsError
     @discardableResult
-    public func getStatus(confirmationBeepType: BeepConfigType? = nil) throws -> StatusResponse {
+    public func getStatus() throws -> StatusResponse {
         if useCancelNoneForStatus {
-            return try cancelNone(confirmationBeepType: confirmationBeepType) // functional replacement for getStatus()
+            return try cancelNone() // functional replacement for getStatus()
         }
-        let statusResponse: StatusResponse = try send([GetStatusCommand()], confirmationBeepType: confirmationBeepType)
+        let statusResponse: StatusResponse = try send([GetStatusCommand()])
         podState.updateFromStatusResponse(statusResponse)
         return statusResponse
     }
-    
-    @discardableResult
-    public func getDetailedStatus(confirmationBeepType: BeepConfigType? = nil) throws -> DetailedStatus {
-        let infoResponse: PodInfoResponse = try send([GetStatusCommand(podInfoType: .detailedStatus)], confirmationBeepType: confirmationBeepType)
-        
-        guard let detailedStatus = infoResponse.podInfo as? DetailedStatus else {
-            throw PodCommsError.unexpectedResponse(response: .podInfoResponse)
-        }
-        if detailedStatus.isFaulted && self.podState.fault == nil {
-            // just detected that the pod has faulted, handle setting the fault state but don't throw
-            handlePodFault(fault: detailedStatus)
+
+    public func readFlashLogsRequest(podInfoResponseSubType: PodInfoResponseSubType) throws {
+        let blocksToSend = [GetStatusCommand(podInfoType: podInfoResponseSubType)]
+        let message = Message(address: podState.address, messageBlocks: blocksToSend, sequenceNum: transport.messageNumber)
+        let messageResponse = try transport.sendMessage(message)
+
+        if let podInfoResponseMessageBlock = messageResponse.messageBlocks[0] as? PodInfoResponse {
+            log.default("Pod flash log: %@", String(describing: podInfoResponseMessageBlock))
+        } else if let fault = messageResponse.fault {
+            handlePodFault(fault: fault)
+            throw PodCommsError.podFault(fault: fault)
         } else {
-            podState.updateFromDetailedStatusResponse(detailedStatus)
+            log.error("Unexpected Pod flash log response: %@", String(describing: messageResponse.messageBlocks[0]))
+            throw PodCommsError.unexpectedResponse(response: messageResponse.messageBlocks[0].blockType)
         }
-        return detailedStatus
-    }
-
-    public func finalizeFinishedDoses() {
-        podState.finalizeFinishedDoses()
-    }
-
-    @discardableResult
-    public func readPodInfo(podInfoResponseSubType: PodInfoResponseSubType, confirmationBeepType: BeepConfigType? = nil) throws -> PodInfoResponse {
-        let podInfoCommand = GetStatusCommand(podInfoType: podInfoResponseSubType)
-        let podInfoResponse: PodInfoResponse = try send([podInfoCommand], confirmationBeepType: confirmationBeepType)
-        return podInfoResponse
     }
 
     public func deactivatePod() throws {
 
-        // Don't try to cancel if the pod hasn't completed its setup as it will either receive no response
-        // (pod progress state <= 2) or creates a $31 pod fault (pod progress states 3 through 7).
-        if podState.setupProgress == .completed && podState.fault == nil && !podState.isSuspended {
-            let result = cancelDelivery(deliveryType: .all)
+        if podState.fault == nil && !podState.isSuspended {
+            let result = cancelDelivery(deliveryType: .all, beepType: .noBeep)
             switch result {
             case .certainFailure(let error):
                 throw error
@@ -761,17 +628,6 @@ public class PodCommsSession {
                 throw error
             default:
                 break
-            }
-        }
-
-        if podState.fault != nil {
-            // All the dosing cleanup from the fault should have already been
-            // handled in handlePodFault() when podState.fault was initialized.
-            do {
-                // read the most recent pulse log entries for later analysis, but don't throw on error
-                try readPodInfo(podInfoResponseSubType: .pulseLogRecent)
-            } catch let error {
-                log.error("Read pulse log failed: %@", String(describing: error))
             }
         }
 
@@ -789,9 +645,9 @@ public class PodCommsSession {
         }
     }
     
-    public func acknowledgeAlerts(alerts: AlertSet, confirmationBeepType: BeepConfigType? = nil) throws -> [AlertSlot: PodAlert] {
+    public func acknowledgeAlerts(alerts: AlertSet) throws -> [AlertSlot: PodAlert] {
         let cmd = AcknowledgeAlertCommand(nonce: podState.currentNonce, alerts: alerts)
-        let status: StatusResponse = try send([cmd], confirmationBeepType: confirmationBeepType)
+        let status: StatusResponse = try send([cmd])
         podState.updateFromStatusResponse(status)
         return podState.activeAlerts
     }

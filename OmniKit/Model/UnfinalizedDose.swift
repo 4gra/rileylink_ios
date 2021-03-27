@@ -60,8 +60,6 @@ public struct UnfinalizedDose: RawRepresentable, Equatable, CustomStringConverti
     let startTime: Date
     var duration: TimeInterval?
     var scheduledCertainty: ScheduledCertainty
-    var insulinType: InsulinType?
-    var automatic: Bool?
     
     var finishTime: Date? {
         get {
@@ -72,28 +70,16 @@ public struct UnfinalizedDose: RawRepresentable, Equatable, CustomStringConverti
         }
     }
     
-    private var nominalProgress: Double {
+    public var progress: Double {
         guard let duration = duration else {
             return 0
         }
         let elapsed = -startTime.timeIntervalSinceNow
-        return elapsed / duration
-    }
-
-    // A value from 0 to 1 giving the nominal progress percentage for a bolus or a temp basal
-    public var progress: Double {
-        return min(nominalProgress, 1)
+        return min(elapsed / duration, 1)
     }
     
-    // Is a bolus or a temp basal nominally finished
     public var isFinished: Bool {
         return progress >= 1
-    }
-
-    // Has a bolus operation had enough time to positively finish
-    public var isBolusPositivelyFinished: Bool {
-        // Pod faults if any pulse takes 20% or more of nominal to deliver
-        return nominalProgress >= 1.2
     }
     
     // Units per hour
@@ -111,26 +97,22 @@ public struct UnfinalizedDose: RawRepresentable, Equatable, CustomStringConverti
         return units
     }
 
-    init(bolusAmount: Double, startTime: Date, scheduledCertainty: ScheduledCertainty, insulinType: InsulinType, automatic: Bool?) {
+    init(bolusAmount: Double, startTime: Date, scheduledCertainty: ScheduledCertainty) {
         self.doseType = .bolus
         self.units = bolusAmount
         self.startTime = startTime
         self.duration = TimeInterval(bolusAmount / Pod.bolusDeliveryRate)
         self.scheduledCertainty = scheduledCertainty
         self.scheduledUnits = nil
-        self.insulinType = insulinType
-        self.automatic = automatic
     }
     
-    init(tempBasalRate: Double, startTime: Date, duration: TimeInterval, scheduledCertainty: ScheduledCertainty, insulinType: InsulinType) {
+    init(tempBasalRate: Double, startTime: Date, duration: TimeInterval, scheduledCertainty: ScheduledCertainty) {
         self.doseType = .tempBasal
         self.units = tempBasalRate * duration.hours
         self.startTime = startTime
         self.duration = duration
         self.scheduledCertainty = scheduledCertainty
         self.scheduledUnits = nil
-        self.insulinType = insulinType
-        self.automatic = nil
     }
 
     init(suspendStartTime: Date, scheduledCertainty: ScheduledCertainty) {
@@ -138,16 +120,13 @@ public struct UnfinalizedDose: RawRepresentable, Equatable, CustomStringConverti
         self.units = 0
         self.startTime = suspendStartTime
         self.scheduledCertainty = scheduledCertainty
-        self.automatic = nil
     }
 
-    init(resumeStartTime: Date, scheduledCertainty: ScheduledCertainty, insulinType: InsulinType) {
+    init(resumeStartTime: Date, scheduledCertainty: ScheduledCertainty) {
         self.doseType = .resume
         self.units = 0
         self.startTime = resumeStartTime
         self.scheduledCertainty = scheduledCertainty
-        self.insulinType = insulinType
-        self.automatic = nil
     }
 
     public mutating func cancel(at date: Date, withRemaining remaining: Double? = nil) {
@@ -237,10 +216,6 @@ public struct UnfinalizedDose: RawRepresentable, Equatable, CustomStringConverti
         if let duration = rawValue["duration"] as? Double {
             self.duration = duration
         }
-        
-        if let rawInsulinType = rawValue["insulinType"] as? InsulinType.RawValue {
-            self.insulinType = InsulinType(rawValue: rawInsulinType)
-        }
     }
     
     public var rawValue: RawValue {
@@ -261,10 +236,6 @@ public struct UnfinalizedDose: RawRepresentable, Equatable, CustomStringConverti
 
         if let duration = duration {
             rawValue["duration"] = duration
-        }
-        
-        if let insulinType = insulinType {
-            rawValue["insulinType"] = insulinType.rawValue
         }
         
         return rawValue
@@ -295,13 +266,13 @@ extension DoseEntry {
     init (_ dose: UnfinalizedDose) {
         switch dose.doseType {
         case .bolus:
-            self = DoseEntry(type: .bolus, startDate: dose.startTime, endDate: dose.finishTime, value: dose.scheduledUnits ?? dose.units, unit: .units, deliveredUnits: dose.finalizedUnits, insulinType: dose.insulinType, automatic: dose.automatic)
+            self = DoseEntry(type: .bolus, startDate: dose.startTime, endDate: dose.finishTime, value: dose.scheduledUnits ?? dose.units, unit: .units, deliveredUnits: dose.finalizedUnits)
         case .tempBasal:
-            self = DoseEntry(type: .tempBasal, startDate: dose.startTime, endDate: dose.finishTime, value: dose.scheduledTempRate ?? dose.rate, unit: .unitsPerHour, deliveredUnits: dose.finalizedUnits, insulinType: dose.insulinType)
+            self = DoseEntry(type: .tempBasal, startDate: dose.startTime, endDate: dose.finishTime, value: dose.scheduledTempRate ?? dose.rate, unit: .unitsPerHour, deliveredUnits: dose.finalizedUnits)
         case .suspend:
             self = DoseEntry(suspendDate: dose.startTime)
         case .resume:
-            self = DoseEntry(resumeDate: dose.startTime, insulinType: dose.insulinType)
+            self = DoseEntry(resumeDate: dose.startTime)
         }
     }
 }
