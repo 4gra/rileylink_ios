@@ -5,34 +5,56 @@
 //  Copyright © 2018 LoopKit Authors. All rights reserved.
 //
 
+import SwiftUI
 import UIKit
 import LoopKit
 import LoopKitUI
 import MinimedKit
+import RileyLinkKitUI
 
 
 extension MinimedPumpManager: PumpManagerUI {
 
-    static public func setupViewController() -> (UIViewController & PumpManagerSetupViewController & CompletionNotifying) {
-        return MinimedPumpManagerSetupViewController.instantiateFromStoryboard()
+    static public func setupViewController(initialSettings settings: PumpManagerSetupSettings, bluetoothProvider: BluetoothProvider, colorPalette: LoopUIColorPalette, allowedInsulinTypes: [InsulinType]) -> SetupUIResult<UIViewController & PumpManagerCreateNotifying & PumpManagerOnboardNotifying & CompletionNotifying, PumpManagerUI> {
+        let navVC = MinimedPumpManagerSetupViewController.instantiateFromStoryboard()
+        let insulinSelectionView = InsulinTypeConfirmation(initialValue: .novolog, supportedInsulinTypes: allowedInsulinTypes) { (confirmedType) in
+            navVC.insulinType = confirmedType
+            let nextViewController = navVC.storyboard?.instantiateViewController(identifier: "RileyLinkSetup") as! RileyLinkSetupTableViewController
+            navVC.pushViewController(nextViewController, animated: true)
+        }
+        let rootVC = UIHostingController(rootView: insulinSelectionView)
+        rootVC.title = "Insulin Type"
+        navVC.pushViewController(rootVC, animated: false)
+        navVC.navigationBar.backgroundColor = .secondarySystemBackground
+        navVC.maxBasalRateUnitsPerHour = settings.maxBasalRateUnitsPerHour
+        navVC.maxBolusUnits = settings.maxBolusUnits
+        navVC.basalSchedule = settings.basalSchedule
+        return .userInteractionRequired(navVC)
     }
 
-    public func settingsViewController() -> (UIViewController & CompletionNotifying) {
+    public func settingsViewController(bluetoothProvider: BluetoothProvider, colorPalette: LoopUIColorPalette, allowedInsulinTypes: [InsulinType]) -> (UIViewController & PumpManagerOnboardNotifying & CompletionNotifying) {
+        let settings = MinimedPumpSettingsViewController(pumpManager: self)
+        let nav = PumpManagerSettingsNavigationViewController(rootViewController: settings)
+        return nav
+    }
+    
+    public func deliveryUncertaintyRecoveryViewController(colorPalette: LoopUIColorPalette) -> (UIViewController & CompletionNotifying) {
+        // Return settings for now. No uncertainty handling atm.
         let settings = MinimedPumpSettingsViewController(pumpManager: self)
         let nav = SettingsNavigationViewController(rootViewController: settings)
         return nav
     }
-
+    
     public var smallImage: UIImage? {
         return state.smallPumpImage
     }
     
-    public func hudProvider() -> HUDProvider? {
-        return MinimedHUDProvider(pumpManager: self)
+    public func hudProvider(bluetoothProvider: BluetoothProvider, colorPalette: LoopUIColorPalette, allowedInsulinTypes: [InsulinType]) -> HUDProvider? {
+        return MinimedHUDProvider(pumpManager: self, bluetoothProvider: bluetoothProvider, colorPalette: colorPalette, allowedInsulinTypes: allowedInsulinTypes)
     }
     
-    public static func createHUDViews(rawValue: HUDProvider.HUDViewsRawState) -> [BaseHUDView] {
-        return MinimedHUDProvider.createHUDViews(rawValue: rawValue)
+    public static func createHUDView(rawValue: HUDProvider.HUDViewRawState) -> LevelHUDView? {
+        return MinimedHUDProvider.createHUDView(rawValue: rawValue)
     }
 }
 
@@ -80,19 +102,11 @@ extension MinimedPumpManager {
 // MARK: - BasalScheduleTableViewControllerSyncSource
 extension MinimedPumpManager {
     public func syncScheduleValues(for viewController: BasalScheduleTableViewController, completion: @escaping (SyncBasalScheduleResult<Double>) -> Void) {
-        pumpOps.runSession(withName: "Save Basal Profile", using: rileyLinkDeviceProvider.firstConnectedDevice) { (session) in
-            guard let session = session else {
-                completion(.failure(PumpManagerError.connection(MinimedPumpManagerError.noRileyLink)))
-                return
-            }
-
-            do {
-                let newSchedule = BasalSchedule(repeatingScheduleValues: viewController.scheduleItems)
-                try session.setBasalSchedule(newSchedule, for: .standard)
-
-                completion(.success(scheduleItems: viewController.scheduleItems, timeZone: session.pump.timeZone))
-            } catch let error {
-                self.log.error("Save basal profile failed: %{public}@", String(describing: error))
+        syncBasalRateSchedule(items: viewController.scheduleItems) { result in
+            switch result {
+            case .success(let schedule):
+                completion(.success(scheduleItems: schedule.items, timeZone: schedule.timeZone))
+            case .failure(let error):
                 completion(.failure(error))
             }
         }

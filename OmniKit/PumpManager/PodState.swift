@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import LoopKit
 
 public enum SetupProgress: Int {
     case addressAssigned = 0
@@ -18,6 +19,8 @@ public enum SetupProgress: Int {
     case startingInsertCannula
     case cannulaInserting
     case completed
+    case activationTimeout
+    case podIncompatible
     
     public var primingNeeded: Bool {
         return self.rawValue < SetupProgress.priming.rawValue
@@ -75,11 +78,11 @@ public struct PodState: RawRepresentable, Equatable, CustomDebugStringConvertibl
         return false
     }
 
-    public var fault: PodInfoFaultEvent?
+    public var fault: DetailedStatus?
     public var messageTransportState: MessageTransportState
     public var primeFinishTime: Date?
     public var setupProgress: SetupProgress
-    var configuredAlerts: [AlertSlot: PodAlert]
+    public var configuredAlerts: [AlertSlot: PodAlert]
 
     public var activeAlerts: [AlertSlot: PodAlert] {
         var active = [AlertSlot: PodAlert]()
@@ -91,7 +94,9 @@ public struct PodState: RawRepresentable, Equatable, CustomDebugStringConvertibl
         return active
     }
     
-    public init(address: UInt32, piVersion: String, pmVersion: String, lot: UInt32, tid: UInt32) {
+    public var insulinType: InsulinType
+    
+    public init(address: UInt32, piVersion: String, pmVersion: String, lot: UInt32, tid: UInt32, packetNumber: Int = 0, messageNumber: Int = 0, insulinType: InsulinType) {
         self.address = address
         self.nonceState = NonceState(lot: lot, tid: tid)
         self.piVersion = piVersion
@@ -103,10 +108,11 @@ public struct PodState: RawRepresentable, Equatable, CustomDebugStringConvertibl
         self.suspendState = .resumed(Date())
         self.fault = nil
         self.activeAlertSlots = .none
-        self.messageTransportState = MessageTransportState(packetNumber: 0, messageNumber: 0)
+        self.messageTransportState = MessageTransportState(packetNumber: packetNumber, messageNumber: messageNumber)
         self.primeFinishTime = nil
         self.setupProgress = .addressAssigned
         self.configuredAlerts = [.slot7: .waitingForPairingReminder]
+        self.insulinType = insulinType
     }
     
     public var unfinishedPairing: Bool {
@@ -129,6 +135,10 @@ public struct PodState: RawRepresentable, Equatable, CustomDebugStringConvertibl
         return setupProgress == .completed
     }
 
+    public var isFaulted: Bool {
+        return fault != nil || setupProgress == .activationTimeout || setupProgress == .podIncompatible
+    }
+
     public mutating func advanceToNextNonce() {
         nonceState.advanceToNextNonce()
     }
@@ -143,9 +153,9 @@ public struct PodState: RawRepresentable, Equatable, CustomDebugStringConvertibl
         nonceState = NonceState(lot: lot, tid: tid, seed: seed)
     }
     
-    public mutating func updateFromStatusResponse(_ response: StatusResponse) {
+    private mutating func updatePodTimes(timeActive: TimeInterval) -> Date {
         let now = Date()
-        let activatedAtComputed = now - response.timeActive
+        let activatedAtComputed = now - timeActive
         if activatedAt == nil {
             self.activatedAt = activatedAtComputed
         }
@@ -158,9 +168,25 @@ public struct PodState: RawRepresentable, Equatable, CustomDebugStringConvertibl
             // The more than a minute later test prevents oscillation of expiresAt based on the timing of the responses.
             self.expiresAt = expiresAtComputed
         }
+        return now
+    }
+
+    public mutating func updateFromStatusResponse(_ response: StatusResponse) {
+        if unfinalizedBolus == nil && response.deliveryStatus.bolusing && response.podProgressStatus.readyForDelivery {
+            // Create the unfinalizedBolus since we currently bolusing in a ready state (possible Loop restart)
+            unfinalizedBolus = UnfinalizedDose(bolusAmount: response.bolusNotDelivered, startTime: Date(), scheduledCertainty: .certain, insulinType: insulinType, automatic: nil)
+        }
+        let now = updatePodTimes(timeActive: response.timeActive)
         updateDeliveryStatus(deliveryStatus: response.deliveryStatus)
-        lastInsulinMeasurements = PodInsulinMeasurements(statusResponse: response, validTime: now, setupUnitsDelivered: setupUnitsDelivered)
+        lastInsulinMeasurements = PodInsulinMeasurements(insulinDelivered: response.insulin, reservoirLevel: response.reservoirLevel, setupUnitsDelivered: setupUnitsDelivered, validTime: now)
         activeAlertSlots = response.alerts
+    }
+
+    public mutating func updateFromDetailedStatusResponse(_ response: DetailedStatus) {
+        let now = updatePodTimes(timeActive: response.timeActive)
+        updateDeliveryStatus(deliveryStatus: response.deliveryStatus)
+        lastInsulinMeasurements = PodInsulinMeasurements(insulinDelivered: response.totalInsulinDelivered, reservoirLevel: response.reservoirLevel, setupUnitsDelivered: setupUnitsDelivered, validTime: now)
+        activeAlertSlots = response.unacknowledgedAlerts
     }
 
     public mutating func registerConfiguredAlert(slot: AlertSlot, alert: PodAlert) {
@@ -179,7 +205,7 @@ public struct PodState: RawRepresentable, Equatable, CustomDebugStringConvertibl
         }
     }
     
-    private mutating func updateDeliveryStatus(deliveryStatus: StatusResponse.DeliveryStatus) {
+    private mutating func updateDeliveryStatus(deliveryStatus: DeliveryStatus) {
         finalizeFinishedDoses()
 
         if let bolus = unfinalizedBolus, bolus.scheduledCertainty == .uncertain {
@@ -313,8 +339,11 @@ public struct PodState: RawRepresentable, Equatable, CustomDebugStringConvertibl
             self.finalizedDoses = []
         }
         
-        if let rawFault = rawValue["fault"] as? PodInfoFaultEvent.RawValue {
-            self.fault = PodInfoFaultEvent(rawValue: rawFault)
+        if let rawFault = rawValue["fault"] as? DetailedStatus.RawValue,
+           let fault = DetailedStatus(rawValue: rawFault),
+           fault.faultEventCode.faultType != .noFaults
+        {
+            self.fault = fault
         } else {
             self.fault = nil
         }
@@ -356,11 +385,19 @@ public struct PodState: RawRepresentable, Equatable, CustomDebugStringConvertibl
                 .slot2: .shutdownImminentAlarm(0),
                 .slot3: .expirationAlert(0),
                 .slot4: .lowReservoirAlarm(0),
+                .slot5: .podSuspendedReminder(active: false, suspendTime: 0),
+                .slot6: .suspendTimeExpired(suspendTime: 0),
                 .slot7: .expirationAdvisoryAlarm(alarmTime: 0, duration: 0)
             ]
         }
         
         self.primeFinishTime = rawValue["primeFinishTime"] as? Date
+        
+        if let rawInsulinType = rawValue["insulinType"] as? InsulinType.RawValue, let insulinType = InsulinType(rawValue: rawInsulinType) {
+            self.insulinType = insulinType
+        } else {
+            insulinType = .humalog
+        }
     }
     
     public var rawValue: RawValue {
@@ -375,7 +412,8 @@ public struct PodState: RawRepresentable, Equatable, CustomDebugStringConvertibl
             "finalizedDoses": finalizedDoses.map( { $0.rawValue }),
             "alerts": activeAlertSlots.rawValue,
             "messageTransportState": messageTransportState.rawValue,
-            "setupProgress": setupProgress.rawValue
+            "setupProgress": setupProgress.rawValue,
+            "insulinType": insulinType.rawValue
             ]
         
         if let unfinalizedBolus = self.unfinalizedBolus {
@@ -418,7 +456,6 @@ public struct PodState: RawRepresentable, Equatable, CustomDebugStringConvertibl
             rawValue["setupUnitsDelivered"] = setupUnitsDelivered
         }
 
-
         if configuredAlerts.count > 0 {
             let rawConfiguredAlerts = Dictionary(uniqueKeysWithValues:
                 configuredAlerts.map { slot, alarm in (String(describing: slot.rawValue), alarm.rawValue) })
@@ -452,6 +489,7 @@ public struct PodState: RawRepresentable, Equatable, CustomDebugStringConvertibl
             "* setupProgress: \(setupProgress)",
             "* primeFinishTime: \(String(describing: primeFinishTime))",
             "* configuredAlerts: \(String(describing: configuredAlerts))",
+            "* insulinType: \(String(describing: insulinType))",
             "",
             fault != nil ? String(reflecting: fault!) : "fault: nil",
             "",

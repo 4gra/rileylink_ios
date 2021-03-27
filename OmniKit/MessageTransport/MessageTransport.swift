@@ -76,7 +76,7 @@ class PodMessageTransport: MessageTransport {
         }
     }
     
-    private var packetNumber: Int {
+    private(set) var packetNumber: Int {
         get {
             return state.packetNumber
         }
@@ -146,7 +146,7 @@ class PodMessageTransport: MessageTransport {
     /// Encodes and sends a packet to the pod, and receives and decodes its response
     ///
     /// - Parameters:
-    ///   - message: The packet to send
+    ///   - packet: The packet to send
     ///   - repeatCount: Number of times to repeat packet before listening for a response. 0 = send once and do not repeat.
     ///   - packetResponseTimeout: The amount of time to wait before retrying
     ///   - exchangeTimeout: The amount of time to continue retrying before giving up
@@ -180,13 +180,13 @@ class PodMessageTransport: MessageTransport {
                     continue
                 }
 
-                guard candidatePacket.address == packet.address else {
-                    log.default("Address %@ does not match %@", String(describing: candidatePacket.address), String(describing: packet.address))
+                guard candidatePacket.address == packet.address || candidatePacket.address == 0xFFFFFFFF else {
+                    log.default("Packet address 0x%x does not match 0x%x", candidatePacket.address, packet.address)
                     continue
                 }
                 
                 guard candidatePacket.sequenceNum == ((packet.sequenceNum + 1) & 0b11111) else {
-                    log.default("Sequence %@ does not match %@", String(describing: candidatePacket.sequenceNum), String(describing: ((packet.sequenceNum + 1) & 0b11111)))
+                    log.default("Packet sequence %@ does not match %@", String(describing: candidatePacket.sequenceNum), String(describing: ((packet.sequenceNum + 1) & 0b11111)))
                     continue
                 }
                 
@@ -209,7 +209,12 @@ class PodMessageTransport: MessageTransport {
     /// - Returns: The received message response
     /// - Throws:
     ///     - PodCommsError.noResponse
+    ///     - PodCommsError.podAckedInsteadOfReturningResponse
+    ///     - PodCommsError.unexpectedPacketType
+    ///     - PodCommsError.emptyResponse
     ///     - MessageError.invalidCrc
+    ///     - MessageError.invalidSequence
+    ///     - MessageError.invalidAddress
     ///     - RileyLinkDeviceError
     func sendMessage(_ message: Message) throws -> Message {
         
@@ -221,7 +226,7 @@ class PodMessageTransport: MessageTransport {
                 var firstPacket = true
                 log.debug("Send: %@", String(describing: message))
                 var dataRemaining = message.encoded()
-                log.debug("Send(Hex): %@", dataRemaining.hexadecimalString)
+                log.default("Send(Hex): %@", dataRemaining.hexadecimalString)
                 messageLogger?.didSend(dataRemaining)
                 while true {
                     let packetType: PacketType = firstPacket ? .pdm : .con
@@ -236,7 +241,7 @@ class PodMessageTransport: MessageTransport {
             }()
             
             guard responsePacket.packetType != .ack else {
-                messageLogger?.didReceive(responsePacket.data)
+                messageLogger?.didReceive(responsePacket.encoded())
                 log.default("Pod responded with ack instead of response: %@", String(describing: responsePacket))
                 throw PodCommsError.podAckedInsteadOfReturningResponse
             }
@@ -247,6 +252,13 @@ class PodMessageTransport: MessageTransport {
                 while true {
                     do {
                         let msg = try Message(encodedData: responseData)
+                        log.default("Recv(Hex): %@", responseData.hexadecimalString)
+                        guard msg.address == address else {
+                            throw MessageError.invalidAddress(address: msg.address)
+                        }
+                        guard msg.sequenceNum == messageNumber else {
+                            throw MessageError.invalidSequence
+                        }
                         messageLogger?.didReceive(responseData)
                         return msg
                     } catch MessageError.notEnoughData {
@@ -263,7 +275,7 @@ class PodMessageTransport: MessageTransport {
                         throw MessageError.invalidCrc
                     } catch let error {
                         // log any other non-garbage messages that generate errors
-                        log.debug("Error Recv(Hex): %@", responseData.hexadecimalString)
+                        log.error("Error (%{public}@) Recv(Hex): %@", String(describing: error), responseData.hexadecimalString)
                         messageLogger?.didReceive(responseData)
                         throw error
                     }
@@ -277,9 +289,7 @@ class PodMessageTransport: MessageTransport {
                 throw PodCommsError.emptyResponse
             }
             
-            if response.messageBlocks[0].blockType != .errorResponse {
-                incrementMessageNumber()
-            }
+            incrementMessageNumber()
             
             return response
         } catch let error {

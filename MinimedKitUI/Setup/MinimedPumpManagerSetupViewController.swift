@@ -37,6 +37,8 @@ public class MinimedPumpManagerSetupViewController: RileyLinkManagerSetupViewCon
     }
 
     private(set) var pumpManager: MinimedPumpManager?
+    
+    internal var insulinType: InsulinType?
 
     /*
      1. RileyLink
@@ -86,12 +88,13 @@ public class MinimedPumpManagerSetupViewController: RileyLinkManagerSetupViewCon
         switch viewController {
         case let vc as MinimedPumpIDSetupViewController:
             vc.rileyLinkPumpManager = rileyLinkPumpManager
+            vc.maxBolusUnits = maxBolusUnits
+            vc.maxBasalRateUnitsPerHour = maxBasalRateUnitsPerHour
+            vc.basalSchedule = basalSchedule
         case let vc as MinimedPumpSentrySetupViewController:
             vc.pumpManager = pumpManager
         case is MinimedPumpClockSetupViewController:
             break
-        case let vc as MinimedPumpSettingsSetupViewController:
-            vc.pumpManager = pumpManager
         case let vc as MinimedPumpSetupCompleteViewController:
             vc.pumpImage = pumpManager?.state.largePumpImage
         default:
@@ -122,13 +125,18 @@ public class MinimedPumpManagerSetupViewController: RileyLinkManagerSetupViewCon
     }
 
     public func pumpManagerSetupComplete(_ pumpManager: PumpManagerUI) {
-        setupDelegate?.pumpManagerSetupViewController(self, didSetUpPumpManager: pumpManager)
+        pumpManagerCreateDelegate?.pumpManagerCreateNotifying(didCreatePumpManager: pumpManager)
     }
 
     override open func finishedSetup() {
         if let pumpManager = pumpManager {
-            let settings = MinimedPumpSettingsViewController(pumpManager: pumpManager)
-            setViewControllers([settings], animated: true)
+            pumpManager.completeOnboard()
+
+            let settings = PumpManagerSetupSettings(maxBasalRateUnitsPerHour: maxBasalRateUnitsPerHour, maxBolusUnits: maxBolusUnits, basalSchedule: basalSchedule)
+            pumpManagerOnboardDelegate?.pumpManagerOnboardNotifying(didOnboardPumpManager: pumpManager, withFinalSettings: settings)
+
+            let settingsViewController = MinimedPumpSettingsViewController(pumpManager: pumpManager)
+            setViewControllers([settingsViewController], animated: true)
         }
     }
 
