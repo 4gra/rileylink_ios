@@ -11,11 +11,9 @@ import LoopKit
 
 // Bridges support for MinimedKit data types
 extension Collection where Element == TimestampedHistoryEvent {
-    
     func pumpEvents(from model: PumpModel) -> [NewPumpEvent] {
         var events: [NewPumpEvent] = []
         var lastTempBasalAmount: DoseEntry?
-        var lastSuspend: DoseEntry?
         // Always assume the sequence may have started rewound. LoopKit will ignore unmatched resume events.
         var isRewound = true
         var title: String
@@ -27,18 +25,9 @@ extension Collection where Element == TimestampedHistoryEvent {
 
             switch event.pumpEvent {
             case let bolus as BolusNormalPumpEvent:
-                let bolusEndDate: Date
-                if let lastSuspend = lastSuspend, bolus.programmed != bolus.amount, lastSuspend.startDate > event.date {
-                    bolusEndDate = lastSuspend.startDate
-                } else if bolus.duration > 0 {
-                    bolusEndDate = event.date.addingTimeInterval(bolus.duration)
-                } else {
-                    bolusEndDate = event.date.addingTimeInterval(model.bolusDeliveryTime(units: bolus.amount))
-                }
-                dose = DoseEntry(type: .bolus, startDate: event.date, endDate: bolusEndDate, value: bolus.programmed, unit: .units, deliveredUnits: bolus.amount)
+                dose = DoseEntry(type: .bolus, startDate: event.date, endDate: event.date.addingTimeInterval(bolus.duration), value: bolus.programmed, unit: .units, deliveredUnits: bolus.amount)
             case is SuspendPumpEvent:
                 dose = DoseEntry(suspendDate: event.date)
-                lastSuspend = dose
             case is ResumePumpEvent:
                 dose = DoseEntry(resumeDate: event.date)
             case let temp as TempBasalPumpEvent:

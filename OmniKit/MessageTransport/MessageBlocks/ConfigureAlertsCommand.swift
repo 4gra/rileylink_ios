@@ -127,9 +127,3 @@ extension AlertConfiguration {
         return data
     }
 }
-
-extension ConfigureAlertsCommand: CustomDebugStringConvertible {
-    public var debugDescription: String {
-        return "ConfigureAlertsCommand(nonce:\(Data(bigEndian: nonce).hexadecimalString), configurations:\(configurations))"
-    }
-}

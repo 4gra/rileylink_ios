@@ -25,6 +25,7 @@ class StatusTests: XCTestCase {
         } catch (let error) {
             XCTFail("message decoding threw error: \(error)")
         }
+        
     }
 
     func testStatusResponse46UnitsLeft() {
@@ -33,11 +34,11 @@ class StatusTests: XCTestCase {
             // Decode
             let decoded = try StatusResponse(encodedData: Data(hexadecimalString: "1d19050ec82c08376f9801dc")!)
             XCTAssertEqual(TimeInterval(minutes: 3547), decoded.timeActive)
-            XCTAssertEqual(.scheduledBasal, decoded.deliveryStatus)
-            XCTAssertEqual(.fiftyOrLessUnits, decoded.podProgressStatus)
+            XCTAssertEqual(.normal, decoded.deliveryStatus)
+            XCTAssertEqual(.belowFiftyUnits, decoded.podProgressStatus)
             XCTAssertEqual(129.45, decoded.insulin, accuracy: 0.01)
             XCTAssertEqual(46.00, decoded.reservoirLevel)
-            XCTAssertEqual(2.2, decoded.bolusNotDelivered)
+            XCTAssertEqual(2.2, decoded.insulinNotDelivered)
             XCTAssertEqual(9, decoded.podMessageCounter)
             //XCTAssert(,decoded.alarms)
         } catch (let error) {
@@ -58,20 +59,42 @@ class StatusTests: XCTestCase {
         } catch (let error) {
             XCTFail("message decoding threw error: \(error)")
         }
+        
     }
     
     func testStatusRequestCommandFaultEvents() {
         // 0e 01 02
         do {
             // Encode
-            let encoded = GetStatusCommand(podInfoType: .detailedStatus)
+            let encoded = GetStatusCommand(podInfoType: .faultEvents)
             XCTAssertEqual("0e0102", encoded.data.hexadecimalString)
             
             // Decode
             let decoded = try GetStatusCommand(encodedData: Data(hexadecimalString: "0e0102")!)
-            XCTAssertEqual(.detailedStatus, decoded.podInfoType)
+            XCTAssertEqual(.faultEvents, decoded.podInfoType)
         } catch (let error) {
             XCTFail("message decoding threw error: \(error)")
         }
+        
     }
+ 
+    func testStatusRequestCommandResetStatus() {
+        // 0e 01 46
+        do {
+            // Encode
+            let encoded = GetStatusCommand(podInfoType: .resetStatus)
+            XCTAssertEqual("0e0146", encoded.data.hexadecimalString)
+            
+            // Decode
+            let decoded = try GetStatusCommand(encodedData: Data(hexadecimalString: "0e0146")!)
+            XCTAssertEqual(.resetStatus, decoded.podInfoType)
+        } catch (let error) {
+            XCTFail("message decoding threw error: \(error)")
+        }
+        
+    }
+    
 }
+
+
+
