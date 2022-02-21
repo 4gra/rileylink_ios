@@ -56,7 +56,7 @@
 "Minimed %@" = "Minimed %@";
 
 /* Generic title of the minimed pump manager */
-"Minimed 500/700 Series" = "Minimed 500/700 -sarja";
+"Minimed 5xx/7xx" = "Minimed 500/700 -sarja";
 
 /* Describing the North America pump region */
 "North America" = "Pohjois-Amerikka";

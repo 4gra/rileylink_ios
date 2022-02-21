@@ -703,7 +703,7 @@ extension MinimedPumpManager: PumpManager {
     
     public static let managerIdentifier: String = "Minimed500"
 
-    public static let localizedTitle = LocalizedString("Minimed 500/700 Series", comment: "Generic title of the minimed pump manager")
+    public static let localizedTitle = LocalizedString("Minimed 5xx/7xx", comment: "Generic title of the minimed pump manager")
 
     public var localizedTitle: String {
         return String(format: LocalizedString("Minimed %@", comment: "Pump title (1: model number)"), state.pumpModel.rawValue)
